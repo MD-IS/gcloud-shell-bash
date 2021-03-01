@@ -7,9 +7,22 @@ a bash script to ssh to google cloud shell
 ## How to use this program
 
 First you need Google OAuth 2.0 Client Credentials, you can get it from [Google Cloud Console](https://console.cloud.google.com/), then go to APIs & Services. Select Create credentials, Select OAuth Client ID. Select "TVs and Limited Input devices" for the Application Type, then download the credentials as json file.
-set `OAUTH2_CLIENT` variable to the path of the downloaded json file ```export OAUTH2_CLIENT='/path/to/credentials'```
-, then clone this repository ```git clone https://github.com/MD-IS/gcloud-shell-bash```
-and make `cloud-shell` file inside it executable ```chmod +x gcloud-shell-bash/cloud-shell```
+set `OAUTH2_CLIENT` variable to the path of the downloaded json file
+
+```sh
+export OAUTH2_CLIENT='/path/to/credentials'
+```
+
+, then clone this repository
+
+```sh
+git clone https://github.com/MD-IS/gcloud-shell-bash
+```
+
+and make `cloud-shell` file inside it executable
+```sh
+chmod +x gcloud-shell-bash/cloud-shell
+```
 then copy that file to your $PATH.
 
 ### Authorization
@@ -17,3 +30,6 @@ then copy that file to your $PATH.
 you need to grant your oauth2 client access to google cloud shell API
 ```cloud-shell --auth```
 
+### SSH to your cloud shell instance
+
+```cloud-shell```
