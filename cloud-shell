@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+
+TOKEN_URL="https://accounts.google.com/o/oauth2/token"
+API_URL="https://cloudshell.googleapis.com/v1"
+
+SSH_ARGS=""
+CS_UPLOAD=""
+CS_DOWNLOAD=""
+CS_SHOULD_START=1
+CS_SHOULD_START_IF_SUSPENDED=1
+CS_SHOULD_LOGIN_TO_SSH_SESSION=1
+
+[ -d ~/.ssh ] || mkdir ~/.ssh
+[ -d ~/.cache ] || mkdir ~/.cache
+[ -d ~/.config ] || mkdir ~/.config
+[ -d ~/.config/cs ] || mkdir ~/.config/cs
+[ -d ~/.config/cs/tokens ] || mkdir ~/.config/cs/tokens
+
+[ ! $CS_USR ] && CS_USR="me"
+[ ! $CS_ENV ] && CS_ENV="default"
+[ ! $CS_KEY ] && CS_KEY=~/.ssh/id_rsa
+
+if [ ! -f $CS_KEY ] || [ ! -f $CS_KEY.pub ]; then
+  ssh-keygen -f $CS_KEY
+fi
+
+PKEY_CONTENT=(`cat $CS_KEY.pub`)
+PKEY="${PKEY_CONTENT[0]} ${PKEY_CONTENT[1]}"
+URL="$API_URL/users/$CS_USR/environments/$CS_ENV"
+
+if [ -f ~/.config/cs/current ]; then
+  CS_ACC=`cat ~/.config/cs/current`
+else
+  CS_SHOULD_AUTHORIZE=1
+fi
+
+while [ $1 ]; do
+  case $1 in
+    -e | --print-env)
+      shift
+      CS_PRINT_ENV=1
+      unset CS_SHOULD_START_IF_SUSPENDED
+    ;;
+    -a | --authorize)
+      shift
+      CS_SHOULD_AUTHORIZE=1
+      if [[ ! $1 =~ ^- ]]; then
+        ACCOUNT_NAME=$1
+      fi
+    ;;
+    -L | --local-port)
+      shift
+      while [ $1 ] && [[ ! $1 =~ ^- ]]; do
+        if [[ $1 =~ ^[0-9]+$ ]]; then
+          SSH_ARGS+=" -L $1:localhost:$1"
+        fi
+        shift
+      done
+    ;;
+    -u | --upload-file)
+      shift
+      while [ $1 ] && [[ ! $1 =~ ^- ]]; do
+        CS_UPLOAD+="$1 "
+        shift
+      done
+    ;;
+    -d | --download-file)
+      shift
+      unset CS_SHOULD_LOGIN_TO_SSH_SESSION
+      while [ $1 ] && [[ ! $1 =~ ^- ]]; do
+        CS_DOWNLOAD+="$1 "
+        shift
+      done
+    ;;
+    -c | --change-account)
+      shift
+      if [ -f ~/.config/cs/tokens/$1 ]; then
+        printf $1 > ~/.config/cs/current
+        unset CS_SHOULD_AUTHORIZE
+        CS_ACC=$1
+      else
+        printf "No Account Named $1\n"
+        unset CS_SHOULD_START
+      fi
+    ;;
+    -l | --list-all-accounts)
+      shift
+      unset CS_SHOULD_START
+      unset CS_SHOULD_AUTHORIZE
+      CS_ACC_LIST=`ls ~/.config/cs/tokens`
+      for i in $CS_ACC_LIST; do
+        printf $i
+        if [ "$CS_ACC" == "$i" ]; then
+          printf ' [current]'
+        fi
+        printf '\n'
+      done
+    ;;
+    *)
+      shift
+    ;;
+  esac
+done
+
+vbk () {
+  # get value of json using its key
+  # arg 1: quoted JSON data
+  # arg 2: key
+
+  [[ $1 =~ \"$2\":([^,\}]*) ]]
+  [ ! ${BASH_REMATCH[1]} ] && exit 1
+  printf "%s" ${BASH_REMATCH[1]}
+}
+
+strvbk () {
+  # get string value of json using its key
+  # arg 1: quoted JSON data
+  # arg 2: key
+
+  [[ $1 =~ \"$2\":[^\"]*\"([^\"]*)\" ]]
+  [ ! ${BASH_REMATCH[1]} ] && exit 1
+  printf "%s" ${BASH_REMATCH[1]}
+}
+
+cs-get () {
+  curl -s $URL --oauth2-bearer $CS_TOKEN
+}
+
+cs-start () {
+  curl -sX POST $URL:start --oauth2-bearer $CS_TOKEN
+}
+
+cs-push-key () {
+  curl -sX POST \
+  --oauth2-bearer $CS_TOKEN \
+  -d "{ \"key\": \"$PKEY\" }" \
+  -H 'Content-type: application/json' \
+  $URL:addPublicKey >> /dev/null
+}
+
+code-to-token () {
+  [ ! $2 ] && return 1
+  BODY="code=$2&grant_type=authorization_code"
+  BODY+="&redirect_uri=urn:ietf:wg:oauth:2.0:oob"
+  if [ $CLIENT_ID ]; then
+    BODY+="&client_id=$CLIENT_ID"
+  else
+    return 2
+  fi
+  if [ $CLIENT_SECRET ]; then
+    BODY+="&client_secret=$CLIENT_SECRET"
+  else
+    return 3
+  fi
+  curl -sX POST -d "$BODY" $TOKEN_URL > $1 || rm $1
+  [ -f $1 ] || return 4
+}
+
+refresh-token () {
+  [ -f $1 ] && return 1
+  BODY="grant_type=refresh_token"
+  if [ $CLIENT_ID ]; then
+    BODY+="&client_id=$CLIENT_ID"
+  else
+    return 2
+  fi
+  if [ $CLIENT_SECRET ]; then
+    BODY+="&client_secret=$CLIENT_SECRET"
+  else
+    return 3
+  fi
+  if [ $REFRESH_TOKEN ]; then
+    BODY+="&refresh_token=$REFRESH_TOKEN"
+  else
+    return 4
+  fi
+  curl -sX POST -d "$BODY" $TOKEN_URL > $1 || rm $1
+  [ -f $1 ] || return 5
+}
+
+if [ -f $OAUTH2_CLIENT ]; then
+  CLIENT=`cat $OAUTH2_CLIENT`
+  CLIENT_ID=`strvbk "$CLIENT" client_id`
+  CLIENT_SECRET=`strvbk "$CLIENT" client_secret`
+fi
+
+if [ $CS_SHOULD_AUTHORIZE ]; then
+  echo "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform&response_type=code&client_id=$CLIENT_ID&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob"
+  printf 'Code : ' && read EXCHANGE_CODE
+  if [ ! $ACCOUNT_NAME ]; then
+    printf 'Account Name : ' && read ACCOUNT_NAME
+    [ ! $ACCOUNT_NAME ] && ACCOUNT_NAME='default'
+  fi
+  TEMP_TOKEN=~/.config/cs/tokens/$ACCOUNT_NAME
+  printf $ACCOUNT_NAME > ~/.config/cs/current
+  code-to-token $TEMP_TOKEN $EXCHANGE_CODE
+  CS_ACC=$ACCOUNT_NAME
+fi
+
+if [ -f ~/.config/cs/tokens/$CS_ACC ]; then
+  CONTENT=`cat ~/.config/cs/tokens/$CS_ACC`
+  REFRESH_TOKEN=`strvbk "$CONTENT" refresh_token`
+fi
+
+if [ $CS_SHOULD_START ]; then
+  if [ ! $CLIENT_ID ] || [ ! $CLIENT_SECRET ]; then
+    printf 'No Credentials\n' && exit 1
+  fi
+
+  if [ ! $REFRESH_TOKEN ]; then
+    printf 'No Refresh Token\n' && exit 2
+  fi
+
+  CACHE_FILE=~/.cache/$CS_ACC
+  if [ -f $CACHE_FILE ]; then
+    FMTIME=`date -r $CACHE_FILE +%s`
+    EXPIRY=`expr \`date +%s\` - $FMTIME`
+    [ $EXPIRY -gt 3599 ] && rm $CACHE_FILE
+  fi
+
+  if [ ! -f $CACHE_FILE ]; then
+    if refresh-token $CACHE_FILE; then
+      CONTENT=`cat $CACHE_FILE`
+      CS_TOKEN=`strvbk "$CONTENT" access_token`
+    else
+      printf 'Smth wrong at access token request\n'
+    fi
+  else
+    CONTENT=`cat $CACHE_FILE`
+    CS_TOKEN=`strvbk "$CONTENT" access_token`
+  fi
+
+  if [ ! $CS_TOKEN ]; then
+    printf 'No Access Token\n' && exit 4
+  fi
+
+  CS_DATA=`cs-get`
+  STATE=`strvbk "$CS_DATA" state`
+  [ $CS_PRINT_ENV ] && echo $CS_DATA | jq
+  
+  if [ $CS_SHOULD_START_IF_SUSPENDED ]; then
+    if [ $STATE == "SUSPENDED" ]; then
+      printf 'Starting Your Cloud Shell Machine...'
+      CS_OPERATION_START=`cs-start`
+    fi
+    while [ ! $STATE == "RUNNING" ]; do
+      sleep 1
+      CS_DATA=`cs-get`
+      STATE=`strvbk "$CS_DATA" state`
+    done
+    SSH_USER=`strvbk "$CS_DATA" sshUsername`
+    SSH_HOST=`strvbk "$CS_DATA" sshHost`
+    SSH_PORT=`vbk "$CS_DATA" sshPort`
+    SSH_ADDR="$SSH_USER@$SSH_HOST"
+  fi
+
+  [ ! $SSH_USER ] && exit 101
+  [ ! $SSH_HOST ] && exit 102
+  [ ! $SSH_PORT ] && exit 103
+  
+  if [ "$CS_UPLOAD" ]; then
+    CS_SCP="scp -r -P $SSH_PORT "
+    for FILE in "$CS_UPLOAD"; do
+      CS_SCP+="$FILE "
+    done
+    CS_SCP+="$SSH_ADDR:"
+    $CS_SCP
+  fi
+
+  if [ "$CS_DOWNLOAD" ]; then
+    CS_SCP="scp -r -P $SSH_PORT "
+    for FILE in "$CS_DOWNLOAD"; do
+      CS_SCP+="$SSH_ADDR:~/$FILE "
+    done
+    CS_SCP+="."
+    $CS_SCP
+  fi
+
+  if [ $CS_SHOULD_LOGIN_TO_SSH_SESSION ]; then
+    if [[ ! "$CS_DATA" =~ "$PKEY" ]]; then
+      printf "Your Public Key is not contained\n"
+      printf "Push it [y/N] : " && read SHOULD_PUSH
+      [ ! $SHOULD_PUSH == 'y' ] || cs-push-key
+    fi
+    ssh $SSH_ARGS -p $SSH_PORT $SSH_ADDR
+  fi
+fi
