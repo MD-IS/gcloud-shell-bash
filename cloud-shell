@@ -10,11 +10,23 @@ CS_SHOULD_START=1
 CS_SHOULD_START_IF_SUSPENDED=1
 CS_SHOULD_LOGIN_TO_SSH_SESSION=1
 
-[ -d ~/.ssh ] || mkdir ~/.ssh
-[ -d ~/.cache ] || mkdir ~/.cache
-[ -d ~/.config ] || mkdir ~/.config
-[ -d ~/.config/cs ] || mkdir ~/.config/cs
-[ -d ~/.config/cs/tokens ] || mkdir ~/.config/cs/tokens
+if [ ! -d ~/.ssh ]; then
+  mkdir ~/.ssh
+fi
+
+if [ ! -d ~/.cache ]; then
+  mkdir ~/.cache
+fi
+
+if [ ! -d ~/.config ]; then
+  mkdir ~/.config
+  if [ ! -d ~/.config/cs ]; then
+    mkdir ~/.config/cs
+    if [ ! -d ~/.config/cs/tokens ]; then
+      mkdir ~/.config/cs/tokens
+    fi
+  fi
+fi
 
 [ ! $CS_USR ] && CS_USR="me"
 [ ! $CS_ENV ] && CS_ENV="default"
@@ -36,6 +48,10 @@ fi
 
 while [ $1 ]; do
   case $1 in
+    -v | --verbose)
+      shift
+      CS_DEBUG=1
+    ;;
     -e | --print-env)
       shift
       CS_PRINT_ENV=1
@@ -108,7 +124,7 @@ vbk () {
   # arg 2: key
 
   [[ $1 =~ \"$2\":([^,\}]*) ]]
-  [ ! ${BASH_REMATCH[1]} ] && exit 1
+  [ ! ${BASH_REMATCH[1]} ] && return 1
   printf "%s" ${BASH_REMATCH[1]}
 }
 
@@ -118,7 +134,7 @@ strvbk () {
   # arg 2: key
 
   [[ $1 =~ \"$2\":[^\"]*\"([^\"]*)\" ]]
-  [ ! ${BASH_REMATCH[1]} ] && exit 1
+  [ ! ${BASH_REMATCH[1]} ] && return 1
   printf "%s" ${BASH_REMATCH[1]}
 }
 
@@ -178,10 +194,17 @@ refresh-token () {
   [ -f $1 ] || return 5
 }
 
-if [ -f $OAUTH2_CLIENT ]; then
+if [ $OAUTH2_CLIENT ] && [ -f $OAUTH2_CLIENT ]; then
   CLIENT=`cat $OAUTH2_CLIENT`
   CLIENT_ID=`strvbk "$CLIENT" client_id`
   CLIENT_SECRET=`strvbk "$CLIENT" client_secret`
+else
+  if [ ! $CLIENT_ID ]; then
+    printf 'No Client ID\n' && exit 1
+  fi
+  if [ ! $CLIENT_SECRET ]; then
+    printf 'No Client Secret\n' && exit 2
+  fi
 fi
 
 if [ $CS_SHOULD_AUTHORIZE ]; then
@@ -203,12 +226,14 @@ if [ -f ~/.config/cs/tokens/$CS_ACC ]; then
 fi
 
 if [ $CS_SHOULD_START ]; then
-  if [ ! $CLIENT_ID ] || [ ! $CLIENT_SECRET ]; then
-    printf 'No Credentials\n' && exit 1
+  if [ ! $CLIENT_ID ]; then
+    printf 'No Client ID\n' && exit 11
   fi
-
+  if [ ! $CLIENT_SECRET ]; then
+    printf 'No Client Secret\n' && exit 12
+  fi
   if [ ! $REFRESH_TOKEN ]; then
-    printf 'No Refresh Token\n' && exit 2
+    printf 'No Refresh Token\n' && exit 13
   fi
 
   CACHE_FILE=~/.cache/$CS_ACC
@@ -231,7 +256,7 @@ if [ $CS_SHOULD_START ]; then
   fi
 
   if [ ! $CS_TOKEN ]; then
-    printf 'No Access Token\n' && exit 4
+    printf 'No Access Token\n' && exit 14
   fi
 
   CS_DATA=`cs-get`
