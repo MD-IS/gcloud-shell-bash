@@ -46,11 +46,94 @@ else
   CS_SHOULD_AUTHORIZE=1
 fi
 
+vbk () {
+  # get value of json using its key
+  # arg 1: quoted JSON data
+  # arg 2: key
+
+  [[ $1 =~ \"$2\":([^,\}]*) ]]
+  [ ! ${BASH_REMATCH[1]} ] && return 1
+  printf "%s" ${BASH_REMATCH[1]}
+}
+
+strvbk () {
+  # get string value of json using its key
+  # arg 1: quoted JSON data
+  # arg 2: key
+
+  [[ $1 =~ \"$2\":[^\"]*\"([^\"]*)\" ]]
+  [ ! ${BASH_REMATCH[1]} ] && return 1
+  printf "%s" ${BASH_REMATCH[1]}
+}
+
+cs-get () {
+  curl -s $URL --oauth2-bearer $CS_TOKEN
+}
+
+cs-start () {
+  curl -sX POST $URL:start --oauth2-bearer $CS_TOKEN
+}
+
+cs-push-key () {
+  curl -sX POST \
+  --oauth2-bearer $CS_TOKEN \
+  -d "{ \"key\": \"$PKEY\" }" \
+  -H 'Content-type: application/json' \
+  $URL:addPublicKey >> /dev/null
+}
+
+code-to-token () {
+  [ ! $1 ] && return 1
+  [ ! $2 ] && return 2
+  BODY="code=$2&grant_type=authorization_code"
+  BODY+="&redirect_uri=urn:ietf:wg:oauth:2.0:oob"
+  if [ $CLIENT_ID ]; then
+    BODY+="&client_id=$CLIENT_ID"
+  else
+    return 3
+  fi
+  if [ $CLIENT_SECRET ]; then
+    BODY+="&client_secret=$CLIENT_SECRET"
+  else
+    return 4
+  fi
+  curl -sX POST -d "$BODY" $TOKEN_URL > $1 || rm $1
+  [ -f $1 ] || return 5
+}
+
+refresh-token () {
+  [ ! $1 ] && return 1
+  [ -f $1 ] && return 2
+  BODY="grant_type=refresh_token"
+  if [ $CLIENT_ID ]; then
+    BODY+="&client_id=$CLIENT_ID"
+  else
+    return 3
+  fi
+  if [ $CLIENT_SECRET ]; then
+    BODY+="&client_secret=$CLIENT_SECRET"
+  else
+    return 4
+  fi
+  if [ $REFRESH_TOKEN ]; then
+    BODY+="&refresh_token=$REFRESH_TOKEN"
+  else
+    return 5
+  fi
+  curl -sX POST -d "$BODY" $TOKEN_URL > $1 || rm $1
+  [ -f $1 ] || return 6
+}
+
+cs-set-account () {
+  printf $1 > ~/.config/cs/current
+  CS_ACC=$1
+}
+
 while [ $1 ]; do
   case $1 in
     -v | --verbose)
       shift
-      CS_DEBUG=1
+      CS_VERBOSE=1
     ;;
     -e | --print-env)
       shift
@@ -91,9 +174,8 @@ while [ $1 ]; do
     -c | --change-account)
       shift
       if [ -f ~/.config/cs/tokens/$1 ]; then
-        printf $1 > ~/.config/cs/current
         unset CS_SHOULD_AUTHORIZE
-        CS_ACC=$1
+        cs-set-account $1
       else
         printf "No Account Named $1\n"
         unset CS_SHOULD_START
@@ -118,82 +200,6 @@ while [ $1 ]; do
   esac
 done
 
-vbk () {
-  # get value of json using its key
-  # arg 1: quoted JSON data
-  # arg 2: key
-
-  [[ $1 =~ \"$2\":([^,\}]*) ]]
-  [ ! ${BASH_REMATCH[1]} ] && return 1
-  printf "%s" ${BASH_REMATCH[1]}
-}
-
-strvbk () {
-  # get string value of json using its key
-  # arg 1: quoted JSON data
-  # arg 2: key
-
-  [[ $1 =~ \"$2\":[^\"]*\"([^\"]*)\" ]]
-  [ ! ${BASH_REMATCH[1]} ] && return 1
-  printf "%s" ${BASH_REMATCH[1]}
-}
-
-cs-get () {
-  curl -s $URL --oauth2-bearer $CS_TOKEN
-}
-
-cs-start () {
-  curl -sX POST $URL:start --oauth2-bearer $CS_TOKEN
-}
-
-cs-push-key () {
-  curl -sX POST \
-  --oauth2-bearer $CS_TOKEN \
-  -d "{ \"key\": \"$PKEY\" }" \
-  -H 'Content-type: application/json' \
-  $URL:addPublicKey >> /dev/null
-}
-
-code-to-token () {
-  [ ! $2 ] && return 1
-  BODY="code=$2&grant_type=authorization_code"
-  BODY+="&redirect_uri=urn:ietf:wg:oauth:2.0:oob"
-  if [ $CLIENT_ID ]; then
-    BODY+="&client_id=$CLIENT_ID"
-  else
-    return 2
-  fi
-  if [ $CLIENT_SECRET ]; then
-    BODY+="&client_secret=$CLIENT_SECRET"
-  else
-    return 3
-  fi
-  curl -sX POST -d "$BODY" $TOKEN_URL > $1 || rm $1
-  [ -f $1 ] || return 4
-}
-
-refresh-token () {
-  [ -f $1 ] && return 1
-  BODY="grant_type=refresh_token"
-  if [ $CLIENT_ID ]; then
-    BODY+="&client_id=$CLIENT_ID"
-  else
-    return 2
-  fi
-  if [ $CLIENT_SECRET ]; then
-    BODY+="&client_secret=$CLIENT_SECRET"
-  else
-    return 3
-  fi
-  if [ $REFRESH_TOKEN ]; then
-    BODY+="&refresh_token=$REFRESH_TOKEN"
-  else
-    return 4
-  fi
-  curl -sX POST -d "$BODY" $TOKEN_URL > $1 || rm $1
-  [ -f $1 ] || return 5
-}
-
 if [ $OAUTH2_CLIENT ] && [ -f $OAUTH2_CLIENT ]; then
   CLIENT=`cat $OAUTH2_CLIENT`
   CLIENT_ID=`strvbk "$CLIENT" client_id`
@@ -215,9 +221,8 @@ if [ $CS_SHOULD_AUTHORIZE ]; then
     [ ! $ACCOUNT_NAME ] && ACCOUNT_NAME='default'
   fi
   TEMP_TOKEN=~/.config/cs/tokens/$ACCOUNT_NAME
-  printf $ACCOUNT_NAME > ~/.config/cs/current
   code-to-token $TEMP_TOKEN $EXCHANGE_CODE
-  CS_ACC=$ACCOUNT_NAME
+  cs-set-account $ACCOUNT_NAME
 fi
 
 if [ -f ~/.config/cs/tokens/$CS_ACC ]; then
